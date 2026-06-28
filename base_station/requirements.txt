@@ -1,0 +1,5 @@
+pip install opencv-python ultralytics
+
+from ultralytics import YOLO
+import numpy as np
+

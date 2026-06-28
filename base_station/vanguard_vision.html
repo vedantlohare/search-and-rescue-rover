@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Vanguard - Optical AI Feed</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <style>
+        body { 
+            background-color: #0d0d0d; 
+            color: #00a8e8; 
+            font-family: 'Consolas', monospace; 
+            text-align: center; 
+            margin-top: 20px;
+        }
+        .main-wrapper {
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            gap: 20px;
+            margin-top: 20px;
+        }
+        .container { 
+            position: relative; 
+            display: inline-block; 
+            border: 2px solid #00a8e8; 
+            border-radius: 10px; 
+            overflow: hidden;
+            background-color: #111;
+        }
+        /* The raw video stream */
+        #cam_stream { width: 640px; height: 480px; display: block; }
+        /* The invisible canvas where the AI draws the boxes */
+        #ai_overlay { position: absolute; top: 0; left: 0; width: 640px; height: 480px; }
+        
+        /* New Mission Log Styling */
+        .log-panel {
+            width: 350px;
+            height: 480px;
+            border: 2px solid #00a8e8;
+            border-radius: 10px;
+            background-color: #1a1a1a;
+            display: flex;
+            flex-direction: column;
+            text-align: left;
+        }
+        .log-header {
+            background-color: #003f5c;
+            color: white;
+            padding: 10px;
+            font-weight: bold;
+            border-bottom: 2px solid #00a8e8;
+        }
+        #detection_log {
+            padding: 10px;
+            overflow-y: auto;
+            flex-grow: 1;
+            font-size: 14px;
+        }
+        .log-entry {
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px dashed #333;
+        }
+
+        h1 { margin-bottom: 5px; }
+        #status { color: #ff9f1c; margin-bottom: 15px; font-weight: bold;}
+    </style>
+</head>
+<body>
+    <h1>VANGUARD VISION SUBSYSTEM</h1>
+    <div id="status">INITIALIZING NEURAL NETWORK...</div>
+
+    <div class="main-wrapper">
+        <div class="container">
+            <img id="cam_stream" src="http://10.133.166.128:81/stream" crossorigin="anonymous">
+            <canvas id="ai_overlay" width="640" height="480"></canvas>
+        </div>
+
+        <div class="log-panel">
+            <div class="log-header">LIVE MISSION LOG</div>
+            <div id="detection_log">
+                <div style="color: #666;">Awaiting sensor data...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const video = document.getElementById('cam_stream');
+        const canvas = document.getElementById('ai_overlay');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status');
+        const logList = document.getElementById('detection_log');
+        const telemetrySocket = new WebSocket("ws://localhost:8765");
+
+        let model = undefined;
+        // This Set keeps track of what we've recently seen so we don't spam the log
+        const recentDetections = new Set(); 
+
+        // Load the AI Model
+        cocoSsd.load().then(loadedModel => {
+            model = loadedModel;
+            statusText.innerText = "SYSTEM ACTIVE: Tracking Objects";
+            statusText.style.color = "#00ff00";
+            logList.innerHTML = ""; // Clear the "awaiting data" text
+            detectFrame(); // Start the loop
+        });
+
+        function addLogEntry(targetClass, score) {
+            // Get current time formatted as HH:MM:SS
+            const timeString = new Date().toLocaleTimeString('en-US', { hour12: false });
+            
+            // Determine text color based on priority
+            const entryColor = targetClass === 'person' ? '#e71d36' : '#ff9f1c';
+            
+            // Create the log HTML
+            const logEntry = document.createElement('div');
+            logEntry.className = 'log-entry';
+            logEntry.style.color = entryColor;
+            logEntry.innerHTML = `[${timeString}] <b>${targetClass.toUpperCase()}</b> localized.<br>Confidence Match: ${score}%`;
+            
+            // Add to the top of the log
+            logList.prepend(logEntry);
+        }
+        function playVictimAlert()
+        {
+            let speech =
+                new SpeechSynthesisUtterance(
+                    "Possible victim detected"
+                );
+
+            speech.rate = 1.0;
+
+            window
+                .speechSynthesis
+                .speak(speech);
+        }
+
+        function detectFrame() {
+            if (model && video.complete && video.naturalHeight !== 0) {
+                model.detect(video).then(predictions => {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height); 
+
+                    // 1. Our expanded SAR Target List
+                    const rescueTargets = ['person', 'cell phone', 'backpack', 'handbag', 'dog', 'cat', 'chair', 'bed'];
+
+                    predictions.forEach(prediction => {
+                        if (rescueTargets.includes(prediction.class) && prediction.score > 0.40) {
+                            const [x, y, width, height] = prediction.bbox;
+                            const scorePercent = Math.round(prediction.score * 100);
+                            
+                            // 2. Draw the live bounding boxes
+                            if (prediction.class === 'person') {
+                                ctx.strokeStyle = "#e71d36"; 
+                                ctx.fillStyle = "#e71d36";
+                                telemetrySocket.send("PERSON_DETECTED");
+                            } else {
+                                ctx.strokeStyle = "#ff9f1c"; 
+                                ctx.fillStyle = "#ff9f1c";
+                            }
+                            
+                            ctx.lineWidth = 3;
+                            ctx.strokeRect(x, y, width, height);
+                            ctx.font = "16px Consolas";
+                            ctx.fillText(`${prediction.class.toUpperCase()} (${scorePercent}%)`, x, y > 20 ? y - 5 : 20);
+
+                            // 3. Update the Mission Log
+                            if (!recentDetections.has(prediction.class)) {
+                                if(
+                                    prediction.class ===
+                                    "person"
+                                )
+                                {
+                                    playVictimAlert();
+                                }
+                                // Add to log
+                                addLogEntry(prediction.class, scorePercent);
+                                
+                                // Mark it as recently seen
+                                recentDetections.add(prediction.class);
+                                
+                                // Remove it from the "recent" list after 10 seconds 
+                                // so it can trigger a new log entry if it is found again later
+                                setTimeout(() => {
+                                    recentDetections.delete(prediction.class);
+                                }, 10000);
+                            }
+                        }
+                    });
+                    
+                    requestAnimationFrame(detectFrame);
+                });
+            } else {
+                requestAnimationFrame(detectFrame);
+            }
+        }
+    </script>
+</body>
+</html>
